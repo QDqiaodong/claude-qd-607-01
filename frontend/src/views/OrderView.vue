@@ -48,9 +48,12 @@
             {{ row.assetNo }}<span class="muted"> · {{ serverName(row.serverId) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="目标位置" width="150">
+        <el-table-column label="位置（下架为下架前快照）" width="210">
           <template #default="{ row }">
-            {{ cabinetName(row.cabinetId) }} · {{ row.targetU }}U
+            <el-tag v-if="row.orderType === 'OFF'" size="small" type="info" effect="plain">下架前</el-tag>
+            <el-tag v-else-if="row.orderType === 'MOVE'" size="small" type="primary" effect="plain">目标</el-tag>
+            <el-tag v-else size="small" type="success" effect="plain">目标</el-tag>
+            <span style="margin-left: 6px">{{ orderLocation(row, cabinetName) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="applicant" label="申请人" width="90" />
@@ -88,7 +91,8 @@
                   link
                   type="primary"
                   size="small"
-                  :disabled="!!frozenIsolation(row)"
+                  :loading="advancingId === row.id"
+                  :disabled="!!frozenIsolation(row) || advancingId === row.id"
                   @click="advance(row)"
                 >
                   推进
@@ -184,6 +188,7 @@ import {
   fmtTime,
   isolationApi,
   orderApi,
+  orderLocation,
   serverApi,
   statusTagType
 } from '../api'
@@ -194,6 +199,8 @@ const cabinets = ref([])
 const servers = ref([])
 const counter = ref({})
 const activeIsolations = ref([])
+/** 正在推进的工单 id：防重复点击只是体验，真正幂等由后端行锁 + 终态校验保证 */
+const advancingId = ref(null)
 
 const query = reactive({ status: '', orderType: '', orderNo: '', applicant: '', page: 1, size: 10 })
 
@@ -263,14 +270,19 @@ function onStatusChange() {
 }
 
 async function advance(row) {
+  if (advancingId.value === row.id) return
   const next = { PENDING: '已批复', APPROVED: '施工中', WORKING: '已完成' }[row.status]
   await ElMessageBox.confirm(`确认把 ${row.orderNo} 推进到「${next}」？`, '推进工单', {
     type: 'warning'
   })
-  await orderApi.advance(row.id)
-  ElMessage.success(`${row.orderNo} 已推进到「${next}」`)
-  reload()
-  loadCounter()
+  advancingId.value = row.id
+  try {
+    await orderApi.advance(row.id)
+    ElMessage.success(`${row.orderNo} 已推进到「${next}」`)
+    await Promise.all([reload(), loadCounter()])
+  } finally {
+    advancingId.value = null
+  }
 }
 
 function openReject(row) {

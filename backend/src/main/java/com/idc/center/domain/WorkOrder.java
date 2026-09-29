@@ -42,13 +42,27 @@ public class WorkOrder {
     @Column(name = "asset_no", length = 30)
     private String assetNo;
 
-    /** 目标机柜 */
+    /**
+     * 目标机柜：上架 / 迁移 = 落地的新机柜；下架 = 下架前所在机柜（历史快照的一部分）。
+     */
     @Column(name = "cabinet_id")
     private Long cabinetId;
 
-    /** 目标起始 U 位 */
+    /** 目标起始 U 位（下架时即下架前起始 U 位） */
     @Column(name = "target_u")
     private Integer targetU;
+
+    /**
+     * 历史位置快照 · 下架 / 迁移【发起那一刻】所在机柜。
+     * 工单一旦创建便不再随资产当前位置变化：资产重新上架或再次迁移后，
+     * 本工单仍能查到这次作业前的原机柜。上架工单为空。
+     */
+    @Column(name = "src_cabinet_id")
+    private Long srcCabinetId;
+
+    /** 历史位置快照 · 下架 / 迁移发起那一刻的起始 U 位；上架工单为空 */
+    @Column(name = "src_start_u")
+    private Integer srcStartU;
 
     /** 申请人 */
     @Column(name = "applicant", length = 30)

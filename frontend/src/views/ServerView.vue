@@ -67,9 +67,10 @@
           </template>
         </el-table-column>
         <el-table-column prop="ipAddress" label="管理 IP" width="120" />
-        <el-table-column label="位置" width="140">
+        <el-table-column label="当前位置" width="170">
           <template #default="{ row }">
-            {{ cabinetName(row.cabinetId) }} · {{ row.startU }}U 起 {{ row.sizeU }}U
+            <span v-if="row.cabinetId == null" class="muted">未分配机柜 / U 位</span>
+            <span v-else>{{ cabinetName(row.cabinetId) }} · {{ row.startU }}U 起 {{ row.sizeU || 1 }}U</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">
@@ -115,7 +116,7 @@
         <el-form-item label="管理 IP"><el-input v-model="form.ipAddress" /></el-form-item>
         <el-form-item label="操作系统"><el-input v-model="form.osVersion" /></el-form-item>
         <el-form-item label="机柜">
-          <el-select v-model="form.cabinetId" style="width: 100%">
+          <el-select v-model="form.cabinetId" clearable placeholder="未分配（下架状态）" style="width: 100%">
             <el-option
               v-for="item in cabinets"
               :key="item.id"

@@ -149,8 +149,30 @@
             <div class="kv"><span>管理 IP</span><b class="mono">{{ current.ipAddress || '—' }}</b></div>
             <div class="kv"><span>操作系统</span><b>{{ current.osVersion || '—' }}</b></div>
             <div class="kv"><span>归属业务</span><b>{{ current.ownerName || '—' }}</b></div>
-            <div class="kv"><span>U 位</span><b>{{ current.startU }}U 起，占 {{ current.sizeU }}U</b></div>
             <div class="kv"><span>上架日期</span><b>{{ current.buyDate || '—' }}</b></div>
+          </div>
+
+          <div class="loc-block">
+            <div class="loc-row">
+              <span class="loc-label">当前位置</span>
+              <b v-if="current.cabinetId != null">{{ current.startU }}U 起，占 {{ current.sizeU || 1 }}U</b>
+              <b v-else class="loc-none">未分配机柜 / 未分配 U 位</b>
+            </div>
+            <div v-if="current.cabinetId != null" class="loc-row">
+              <span class="loc-label">所属机柜</span>
+              <b>{{ cabinetNameOf(current.cabinetId) }}</b>
+            </div>
+            <div v-if="lastOfflineOrder" class="loc-row">
+              <span class="loc-label">下架前位置</span>
+              <b class="loc-history">
+                {{ cabinetNameOf(lastOfflineOrder.srcCabinetId ?? lastOfflineOrder.cabinetId) }} ·
+                {{ lastOfflineOrder.srcStartU ?? lastOfflineOrder.targetU }}U
+                <em>（工单 {{ lastOfflineOrder.orderNo }}，{{ fmtTime(lastOfflineOrder.finishTime) }} 完成）</em>
+              </b>
+            </div>
+            <p v-if="current.status === 'OFFLINE' && !lastOfflineOrder" class="loc-hint">
+              该设备当前已下架无机柜位置，且查不到已完成的下架工单，历史位置无法确认。
+            </p>
           </div>
 
           <div class="detail-actions">
@@ -232,6 +254,7 @@ const isolation = ref(null)
 
 const drawer = ref(false)
 const current = ref(null)
+const currentOrders = ref([])
 const focusU = ref(0)
 
 const orderDialog = ref(false)
@@ -259,6 +282,13 @@ const usagePercent = computed(() => {
 })
 
 const detailTitle = computed(() => (current.value ? `服务器详情 · ${current.value.assetNo}` : '服务器详情'))
+
+const cabinetNameOf = (id) => cabinets.value.find((item) => item.id === id)?.code || `机柜#${id}`
+
+/** 最近一张【已完成下架工单】：它的 src_* 是永久快照，重新上架后也不被改写 */
+const lastOfflineOrder = computed(() =>
+  currentOrders.value.find((order) => order.orderType === 'OFF' && order.status === 'DONE') || null
+)
 
 const orderTitle = computed(
   () => ({ ON: '发起上架工单', OFF: '发起下架工单', MOVE: '发起迁移工单' })[orderForm.value.orderType]
@@ -294,17 +324,22 @@ function openSlot(slot) {
     return
   }
   serverApi.get(slot.serverId).then((data) => {
-    current.value = data
-    drawer.value = true
+    openDetail(data)
   })
 }
 
 function focusServer(item) {
   focusU.value = item.startU
   serverApi.get(item.id).then((data) => {
-    current.value = data
-    drawer.value = true
+    openDetail(data)
   })
+}
+
+/** 打开详情：资产 + 该设备的工单历史（下架前位置从已完成下架工单的快照里取） */
+async function openDetail(data) {
+  current.value = data
+  currentOrders.value = await orderApi.byServer(data.id)
+  drawer.value = true
 }
 
 function openOrder(type) {
@@ -339,9 +374,9 @@ async function submitOrder() {
 async function changeStatus(status) {
   await serverApi.setStatus(current.value.id, status)
   ElMessage.success('状态已更新为「' + statusName(status) + '」')
-  current.value = await serverApi.get(current.value.id)
-  loadRack()
-  loadServers()
+  await loadAll()
+  const fresh = await serverApi.get(current.value.id)
+  await openDetail(fresh)
 }
 
 async function loadRack() {
@@ -629,6 +664,47 @@ onMounted(async () => {
 }
 
 /* 抽屉内容 */
+.loc-block {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid #dde5ea;
+  border-radius: 8px;
+  background: #f7f9fa;
+}
+
+.loc-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.loc-label {
+  flex: 0 0 64px;
+  color: var(--ink-3);
+}
+
+.loc-none {
+  color: #90a4ae;
+}
+
+.loc-history {
+  color: #5a6a74;
+}
+
+.loc-history em {
+  font-style: normal;
+  font-weight: 400;
+  color: #90a4ae;
+}
+
+.loc-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #b0853a;
+}
+
 .detail-head {
   display: flex;
   align-items: center;

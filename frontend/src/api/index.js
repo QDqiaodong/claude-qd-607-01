@@ -149,6 +149,42 @@ export const statusTagType = (status) =>
 /** 后端 LocalDateTime 出来是 "2026-09-21T09:10:00"，页面上显示到分钟 */
 export const fmtTime = (value) => (value ? String(value).replace('T', ' ').slice(0, 16) : '—')
 
+/**
+ * 工单位置文案：
+ *  - OFF 下架：展示【下架前位置】永久快照（src_* 优先，兼容老单的 cabinet_id/target_u），
+ *    不随资产重新上架而变；
+ *  - ON 上架 / MOVE 迁移：展示目标位置。
+ * cabinets 为机柜下拉清单（带 code）。
+ */
+export const orderLocation = (row, cabinetName) => {
+  const name = (id) => (cabinetName ? cabinetName(id) : id)
+  if (row.orderType === 'OFF') {
+    const cabinetId = row.srcCabinetId ?? row.cabinetId
+    const startU = row.srcStartU ?? row.targetU
+    if (cabinetId == null) return '下架前位置未记录'
+    return `下架前 ${name(cabinetId)} · ${startU}U`
+  }
+  return `${name(row.cabinetId)} · ${row.targetU}U`
+}
+
+/**
+ * 服务器当前位置文案：无机柜 = 当前未分配（下架完成后的口径），避免和「下架前在哪」混淆。
+ */
+export const serverLocation = (row, cabinetName) => {
+  if (!row || row.cabinetId == null) return '未分配机柜 / 未分配 U 位'
+  const code = cabinetName ? cabinetName(row.cabinetId) : row.cabinetId
+  return `${code} · ${row.startU}U 起 ${row.sizeU || 1}U`
+}
+
+/** 工单里的历史位置快照（src_* 优先，老单回退 cabinet_id/target_u），供服务器详情展示下架前位置 */
+export const orderSnapshotLocation = (order, cabinetName) => {
+  const cabinetId = order.srcCabinetId ?? order.cabinetId
+  const startU = order.srcStartU ?? order.targetU
+  if (cabinetId == null) return null
+  const code = cabinetName ? cabinetName(cabinetId) : cabinetId
+  return `${code} · ${startU}U`
+}
+
 /** 当前月 yyyy-MM */
 export const currentMonth = () => {
   const now = new Date()
