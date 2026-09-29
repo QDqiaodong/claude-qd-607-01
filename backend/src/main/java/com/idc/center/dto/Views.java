@@ -82,6 +82,30 @@ public final class Views {
         }
     }
 
+    /**
+     * 服务器详情读模型：当前位置（资产实时值）与最近一次下架前的历史位置快照分开。
+     * 下架完成后 cabinetId / startU 为 null（未分配机柜、未分配 U 位），
+     * 而 offXxx 仍永久指向下架前的原机柜、原 U 位；重新上架也不改写它。
+     */
+    @Data
+    public static class ServerDetail {
+        private ServerAsset server;
+        /** 最近一张已完成下架工单（历史位置来源） */
+        private Long lastOffOrderId;
+        private String lastOffOrderNo;
+        /** 下架前历史位置快照：可能有值的时机是完成下架之后永久保留 */
+        private Long offCabinetId;
+        private Integer offStartU;
+        private Integer offSizeU;
+        private LocalDateTime offFinishTime;
+
+        public static ServerDetail of(ServerAsset server) {
+            ServerDetail detail = new ServerDetail();
+            detail.setServer(server);
+            return detail;
+        }
+    }
+
     /** 一个机柜的机架图 */
     @Data
     public static class RackView {

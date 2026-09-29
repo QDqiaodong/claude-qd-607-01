@@ -42,13 +42,26 @@ public class WorkOrder {
     @Column(name = "asset_no", length = 30)
     private String assetNo;
 
-    /** 目标机柜 */
+    /** 目标机柜（下架工单指下架前所在机柜） */
     @Column(name = "cabinet_id")
     private Long cabinetId;
 
-    /** 目标起始 U 位 */
+    /** 目标起始 U 位（下架工单指下架前起始 U 位） */
     @Column(name = "target_u")
     private Integer targetU;
+
+    /**
+     * 历史位置快照：完成时的「操作前」位置，一经写入永不随资产当前位置变化而改写。
+     * 下架：下架前机柜 / 起始 U / 占用 U 数；迁移：迁移前位置；上架：为空（原本就没有位置）。
+     */
+    @Column(name = "from_cabinet_id")
+    private Long fromCabinetId;
+
+    @Column(name = "from_start_u")
+    private Integer fromStartU;
+
+    @Column(name = "from_size_u")
+    private Integer fromSizeU;
 
     /** 申请人 */
     @Column(name = "applicant", length = 30)

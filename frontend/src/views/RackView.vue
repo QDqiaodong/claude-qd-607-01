@@ -125,6 +125,9 @@
               <b>{{ item.assetNo }}</b>
               <span class="muted">{{ item.brand }} {{ item.model }}</span>
               <em>{{ item.startU }}U / {{ item.sizeU }}U</em>
+              <el-tag v-if="item.status === 'OFFLINE'" type="info" size="small" effect="plain">
+                已下架 · 历史遗留位置
+              </el-tag>
             </li>
             <li v-if="!cabinetServers.length" class="muted">该机柜暂无服务器</li>
           </ul>
@@ -140,6 +143,28 @@
             <span class="tag" :class="'tag-' + current.status">{{ statusName(current.status) }}</span>
             <b>{{ current.assetNo }}</b>
           </div>
+
+          <!-- 当前位置：在架有具体柜/U；下架后为「未分配机柜、未分配 U 位」 -->
+          <div class="pos-block">
+            <div class="pos-title">当前位置</div>
+            <template v-if="current.cabinetId">
+              {{ cabinetCode(current.cabinetId) }} · {{ current.startU }}U 起，占 {{ current.sizeU }}U
+            </template>
+            <el-tag v-else type="info" size="small" effect="plain">未分配机柜 / 未分配 U 位</el-tag>
+          </div>
+
+          <!-- 下架前位置：来自已完成下架工单的历史快照，永久保留，不随重新上架改写 -->
+          <div v-if="offHistory" class="pos-block pos-history">
+            <div class="pos-title">
+              下架前位置
+              <el-tooltip content="取自已完成下架工单的历史快照，永久保留；以后重新上架也不会改写" placement="top">
+                <i class="pos-info">ⓘ</i>
+              </el-tooltip>
+            </div>
+            <div>{{ cabinetCode(offHistory.offCabinetId) }} · {{ offHistory.offStartU }}U 起<template v-if="offHistory.offSizeU">，占 {{ offHistory.offSizeU }}U</template></div>
+            <div class="muted">下架工单 {{ offHistory.lastOffOrderNo }} · {{ fmtTime(offHistory.offFinishTime) }} 完成</div>
+          </div>
+
           <div class="kv-grid">
             <div class="kv"><span>品牌 / 型号</span><b>{{ current.brand }} {{ current.model }}</b></div>
             <div class="kv"><span>序列号</span><b class="mono">{{ current.serialNo || '—' }}</b></div>
@@ -149,7 +174,6 @@
             <div class="kv"><span>管理 IP</span><b class="mono">{{ current.ipAddress || '—' }}</b></div>
             <div class="kv"><span>操作系统</span><b>{{ current.osVersion || '—' }}</b></div>
             <div class="kv"><span>归属业务</span><b>{{ current.ownerName || '—' }}</b></div>
-            <div class="kv"><span>U 位</span><b>{{ current.startU }}U 起，占 {{ current.sizeU }}U</b></div>
             <div class="kv"><span>上架日期</span><b>{{ current.buyDate || '—' }}</b></div>
           </div>
 
@@ -231,7 +255,9 @@ const servers = ref([])
 const isolation = ref(null)
 
 const drawer = ref(false)
+/** 详情读模型：current = 资产实时字段，offHistory = 最近一次下架前位置快照 */
 const current = ref(null)
+const offHistory = ref(null)
 const focusU = ref(0)
 
 const orderDialog = ref(false)
@@ -252,6 +278,11 @@ const cabinetServers = computed(() =>
     .filter((item) => item.cabinetId === cabinetId.value)
     .sort((a, b) => (a.startU || 0) - (b.startU || 0))
 )
+
+const cabinetCode = (id) => {
+  const hit = cabinets.value.find((item) => item.id === id)
+  return hit ? hit.code : '未分配机柜'
+}
 
 const usagePercent = computed(() => {
   const total = rack.value.totalU || 1
@@ -293,18 +324,20 @@ function openSlot(slot) {
     orderDialog.value = true
     return
   }
-  serverApi.get(slot.serverId).then((data) => {
-    current.value = data
-    drawer.value = true
-  })
+  openDetail(slot.serverId)
 }
 
 function focusServer(item) {
   focusU.value = item.startU
-  serverApi.get(item.id).then((data) => {
-    current.value = data
-    drawer.value = true
-  })
+  openDetail(item.id)
+}
+
+/** 详情：当前位置与下架前历史位置分两次数据给，互不覆盖 */
+async function openDetail(serverId) {
+  const detail = await serverApi.detail(serverId)
+  current.value = detail.server
+  offHistory.value = detail.offCabinetId ? detail : null
+  drawer.value = true
 }
 
 function openOrder(type) {
@@ -339,9 +372,9 @@ async function submitOrder() {
 async function changeStatus(status) {
   await serverApi.setStatus(current.value.id, status)
   ElMessage.success('状态已更新为「' + statusName(status) + '」')
-  current.value = await serverApi.get(current.value.id)
-  loadRack()
-  loadServers()
+  // 下架会同时释放位置：立面、本柜清单、抽屉详情一起刷新，保持同一口径
+  await Promise.all([loadRack(), loadServers()])
+  await openDetail(current.value.id)
 }
 
 async function loadRack() {
@@ -635,6 +668,36 @@ onMounted(async () => {
   gap: 10px;
   margin-bottom: 12px;
   font-size: 15px;
+}
+
+/* 当前位置 / 下架前历史位置 两块明确区分 */
+.pos-block {
+  border: 1px solid #dde5ea;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  background: #f7f9fa;
+}
+
+.pos-history {
+  background: #fff8e1;
+  border-color: #ffe082;
+}
+
+.pos-title {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pos-info {
+  font-style: normal;
+  color: #b08900;
+  cursor: help;
 }
 
 .tag {

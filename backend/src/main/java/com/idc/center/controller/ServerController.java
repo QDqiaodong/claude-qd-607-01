@@ -43,6 +43,12 @@ public class ServerController {
         return ApiResponse.success(serverService.get(id));
     }
 
+    /** 服务器详情：当前位置 + 最近一次下架前的历史位置快照（两者分列，互不覆盖） */
+    @GetMapping("/servers/{id}/detail")
+    public ApiResponse<Views.ServerDetail> detail(@PathVariable("id") Long id) {
+        return ApiResponse.success(serverService.detail(id));
+    }
+
     @PostMapping("/servers")
     public ApiResponse<ServerAsset> create(@Valid @RequestBody Dtos.ServerSaveReq req) {
         return ApiResponse.success("服务器资产已登记", serverService.create(req));

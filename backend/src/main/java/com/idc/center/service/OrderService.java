@@ -9,21 +9,21 @@ import org.springframework.data.domain.ExampleMatcher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.idc.center.common.BizException;
 import com.idc.center.domain.Cabinet;
-import com.idc.center.domain.Isolation;
 import com.idc.center.domain.ServerAsset;
 import com.idc.center.domain.WorkOrder;
 import com.idc.center.dto.Dtos;
 import com.idc.center.dto.Views;
 import com.idc.center.repository.CabinetRepository;
-import com.idc.center.repository.IsolationRepository;
 import com.idc.center.repository.ServerAssetRepository;
 import com.idc.center.repository.WorkOrderRepository;
 
 /**
  * 模块三：上架 / 下架 / 迁移工单，状态机 待审批 → 已批复 → 施工中 → 已完成。
+ * 这里负责查询、建单校验与组装；推进 / 驳回的事务落地在 {@link OrderTxService}。
  */
 @Service
 public class OrderService {
@@ -33,16 +33,16 @@ public class OrderService {
     private final WorkOrderRepository orderRepository;
     private final ServerAssetRepository serverRepository;
     private final CabinetRepository cabinetRepository;
-    private final IsolationRepository isolationRepository;
+    private final OrderTxService txService;
 
     public OrderService(WorkOrderRepository orderRepository,
                         ServerAssetRepository serverRepository,
                         CabinetRepository cabinetRepository,
-                        IsolationRepository isolationRepository) {
+                        OrderTxService txService) {
         this.orderRepository = orderRepository;
         this.serverRepository = serverRepository;
         this.cabinetRepository = cabinetRepository;
-        this.isolationRepository = isolationRepository;
+        this.txService = txService;
     }
 
     /**
@@ -70,23 +70,37 @@ public class OrderService {
                 PageRequest.of(Math.max(query.getPage(), 0), size, sort)));
     }
 
+    /** 建单：统一锁序「机柜 → 服务器」，加锁后复检状态与 U 位，避免并发死锁与重位 */
+    @Transactional
     public WorkOrder create(Dtos.OrderCreateReq req) {
-        ServerAsset server = serverRepository.findById(req.getServerId())
-                .orElseThrow(() -> new BizException("服务器不存在"));
         if (!IdcRule.isValidOrderType(req.getOrderType())) {
             throw new BizException("工单类型不合法：" + req.getOrderType());
         }
+        ServerAsset preview = serverRepository.findById(req.getServerId())
+                .orElseThrow(() -> new BizException("服务器不存在"));
+        if ("ON".equals(req.getOrderType()) && IdcRule.occupiesU(preview.getStatus())) {
+            throw new BizException("该服务器当前已在架，不能再发起上架工单");
+        }
+        if ("OFF".equals(req.getOrderType()) && !IdcRule.occupiesU(preview.getStatus())) {
+            throw new BizException("该服务器不在架，无需下架");
+        }
+        Long cabinetId = req.getCabinetId() != null ? req.getCabinetId() : preview.getCabinetId();
+        if (cabinetId == null) {
+            throw new BizException("请选择目标机柜");
+        }
+
+        // 先锁机柜、再锁服务器：与工单完成落地、手工改位置同一全局锁序（机柜 → 服务器）
+        Cabinet cabinet = cabinetRepository.lockById(cabinetId)
+                .orElseThrow(() -> new BizException("机柜不存在"));
+        ServerAsset server = serverRepository.lockById(req.getServerId())
+                .orElseThrow(() -> new BizException("服务器不存在"));
+        // 加锁后复检状态，挡住预检与加锁之间被别的事务改动的情况
         if ("ON".equals(req.getOrderType()) && IdcRule.occupiesU(server.getStatus())) {
             throw new BizException("该服务器当前已在架，不能再发起上架工单");
         }
         if ("OFF".equals(req.getOrderType()) && !IdcRule.occupiesU(server.getStatus())) {
             throw new BizException("该服务器不在架，无需下架");
         }
-        Long cabinetId = req.getCabinetId() != null ? req.getCabinetId() : server.getCabinetId();
-        if (cabinetId == null) {
-            throw new BizException("请选择目标机柜");
-        }
-        Cabinet cabinet = cabinetRepository.findById(cabinetId).orElseThrow(() -> new BizException("机柜不存在"));
 
         WorkOrder order = new WorkOrder();
         order.setOrderNo("WO" + NO_SEQ.format(LocalDateTime.now()));
@@ -101,95 +115,30 @@ public class OrderService {
         order.setRemark(req.getRemark());
 
         if (!"OFF".equals(req.getOrderType())) {
-            checkTarget(order, cabinet, server.getId());
+            checkTarget(order, cabinet, server);
         }
         return orderRepository.save(order);
     }
 
-    /** 推进：待审批 → 已批复 → 施工中 → 已完成；到已完成时真正改动服务器的位置与状态 */
+    /** 推进：待审批 → 已批复 → 施工中 → 已完成；到已完成时同事务落地服务器位置与状态 */
     public WorkOrder advance(Long id) {
-        WorkOrder order = orderRepository.findById(id).orElseThrow(() -> new BizException("工单不存在"));
-        String next = IdcRule.nextOrderStatus(order.getStatus());
-        if (next == null) {
-            throw new BizException("工单已处于终态（" + IdcRule.orderStatusName(order.getStatus()) + "），不能再推进");
-        }
-        checkIsolation(order);
-        if ("APPROVED".equals(next)) {
-            order.setApprover("值班主管");
-        }
-        if ("WORKING".equals(next)) {
-            order.setHandler("运维组");
-        }
-        order.setStatus(next);
-        if ("DONE".equals(next)) {
-            applyToServer(order);
-            order.setFinishTime(LocalDateTime.now());
-        }
-        return orderRepository.save(order);
-    }
-
-    /**
-     * 机柜停电检修隔离：上架 / 迁移工单在目标机柜隔离期间不得推进（后端强制，前端禁用只是提示）。
-     * 隔离解除后这里自然放行；U 位冲突等其他业务规则不受影响，仍按原逻辑校验。
-     */
-    private void checkIsolation(WorkOrder order) {
-        if (!"ON".equals(order.getOrderType()) && !"MOVE".equals(order.getOrderType())) {
-            return;
-        }
-        if (order.getCabinetId() == null) {
-            return;
-        }
-        Isolation active = isolationRepository.findByActiveCabinet(order.getCabinetId()).orElse(null);
-        if (active != null) {
-            throw new BizException("目标机柜正在停电检修隔离中（" + active.getIsolationNo() + "："
-                    + active.getReason() + "），隔离解除前该工单不能推进");
-        }
+        return txService.advance(id);
     }
 
     public WorkOrder reject(Long id, Dtos.RejectReq req) {
-        WorkOrder order = orderRepository.findById(id).orElseThrow(() -> new BizException("工单不存在"));
-        if (!IdcRule.canReject(order.getStatus())) {
-            throw new BizException("当前状态（" + IdcRule.orderStatusName(order.getStatus()) + "）不能驳回");
-        }
-        order.setStatus("REJECTED");
-        order.setRejectReason(req.getReason().trim());
-        return orderRepository.save(order);
+        return txService.reject(id, req);
     }
 
-    /** 工单完成时落地到服务器资产 */
-    private void applyToServer(WorkOrder order) {
-        ServerAsset server = serverRepository.findById(order.getServerId())
-                .orElseThrow(() -> new BizException("工单关联的服务器不存在"));
-        if ("OFF".equals(order.getOrderType())) {
-            server.setStatus("OFFLINE");
-        } else {
-            Cabinet cabinet = cabinetRepository.findById(order.getCabinetId())
-                    .orElseThrow(() -> new BizException("目标机柜不存在"));
-            int totalU = cabinet.getTotalU() == null ? 42 : cabinet.getTotalU();
-            String message = IdcRule.conflictMessage(
-                    serverRepository.findByCabinetIdOrderByStartUAsc(order.getCabinetId()),
-                    totalU, order.getTargetU(), server.getSizeU(), server.getId());
-            if (message != null) {
-                throw new BizException(message);
-            }
-            server.setCabinetId(order.getCabinetId());
-            server.setStartU(order.getTargetU());
-            server.setStatus("ONLINE");
-        }
-        serverRepository.save(server);
-    }
-
-    /** 新建时预检目标 U 位是否放得下 */
-    private void checkTarget(WorkOrder order, Cabinet cabinet, Long serverId) {
+    /** 新建时预检目标 U 位是否放得下（调用方已持有目标机柜锁） */
+    private void checkTarget(WorkOrder order, Cabinet cabinet, ServerAsset server) {
         if (order.getTargetU() == null) {
             throw new BizException("请填写目标起始 U 位");
         }
-        ServerAsset server = serverRepository.findById(serverId).orElse(null);
-        int sizeU = server == null || server.getSizeU() == null ? 1 : server.getSizeU();
+        int sizeU = server.getSizeU() == null ? 1 : server.getSizeU();
         int totalU = cabinet.getTotalU() == null ? 42 : cabinet.getTotalU();
         String message = IdcRule.conflictMessage(
                 serverRepository.findByCabinetIdOrderByStartUAsc(order.getCabinetId()),
-                totalU, order.getTargetU(), sizeU, serverId);
+                totalU, order.getTargetU(), sizeU, server.getId());
         if (message != null) {
             throw new BizException(message);
         }

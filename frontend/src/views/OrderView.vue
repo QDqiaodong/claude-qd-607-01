@@ -48,9 +48,14 @@
             {{ row.assetNo }}<span class="muted"> · {{ serverName(row.serverId) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="目标位置" width="150">
+        <el-table-column :label="positionColLabel" width="160">
           <template #default="{ row }">
-            {{ cabinetName(row.cabinetId) }} · {{ row.targetU }}U
+            <template v-if="row.orderType === 'OFF'">
+              <span class="muted">下架前：</span>{{ cabinetName(offRow(row).cabinetId) }} · {{ offRow(row).startU }}U
+            </template>
+            <template v-else>
+              {{ cabinetName(row.cabinetId) }} · {{ row.targetU }}U
+            </template>
           </template>
         </el-table-column>
         <el-table-column prop="applicant" label="申请人" width="90" />
@@ -88,6 +93,7 @@
                   link
                   type="primary"
                   size="small"
+                  :loading="advancingId === row.id"
                   :disabled="!!frozenIsolation(row)"
                   @click="advance(row)"
                 >
@@ -201,6 +207,8 @@ const dialog = ref(false)
 const rejectDialog = ref(false)
 const rejectReason = ref('')
 const rejectId = ref(null)
+/** 正在推进的工单 id：前端先挡一道连点；最终幂等由后端行锁 + 状态机保证 */
+const advancingId = ref(null)
 
 const form = ref({ orderType: 'ON', serverId: null, cabinetId: null, targetU: 1, applicant: '', remark: '' })
 
@@ -223,6 +231,14 @@ const cabinetName = (id) => {
   const hit = cabinets.value.find((item) => item.id === id)
   return hit ? hit.code : '—'
 }
+
+/** 下架工单的历史位置：新数据读完成时固定的 from 快照；老数据回退到工单原目标位置字段 */
+const offRow = (row) => ({
+  cabinetId: row.fromCabinetId ?? row.cabinetId,
+  startU: row.fromStartU ?? row.targetU
+})
+
+const positionColLabel = computed(() => '目标 / 下架前位置')
 
 const serverName = (id) => {
   const hit = servers.value.find((item) => item.id === id)
@@ -263,14 +279,24 @@ function onStatusChange() {
 }
 
 async function advance(row) {
+  // 前端防抖只负责体验，重复点击 / 重试 / 重启后的唯一完成由后端保证
+  if (advancingId.value === row.id) return
   const next = { PENDING: '已批复', APPROVED: '施工中', WORKING: '已完成' }[row.status]
-  await ElMessageBox.confirm(`确认把 ${row.orderNo} 推进到「${next}」？`, '推进工单', {
-    type: 'warning'
-  })
-  await orderApi.advance(row.id)
-  ElMessage.success(`${row.orderNo} 已推进到「${next}」`)
-  reload()
-  loadCounter()
+  try {
+    await ElMessageBox.confirm(`确认把 ${row.orderNo} 推进到「${next}」？`, '推进工单', {
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+  advancingId.value = row.id
+  try {
+    await orderApi.advance(row.id)
+    ElMessage.success(`${row.orderNo} 已推进到「${next}」`)
+    await Promise.all([reload(), loadCounter()])
+  } finally {
+    advancingId.value = null
+  }
 }
 
 function openReject(row) {

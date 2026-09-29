@@ -67,9 +67,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="ipAddress" label="管理 IP" width="120" />
-        <el-table-column label="位置" width="140">
+        <el-table-column label="当前位置" width="170">
           <template #default="{ row }">
-            {{ cabinetName(row.cabinetId) }} · {{ row.startU }}U 起 {{ row.sizeU }}U
+            <template v-if="row.cabinetId">
+              {{ cabinetName(row.cabinetId) }} · {{ row.startU }}U 起 {{ row.sizeU }}U
+            </template>
+            <el-tag v-else type="info" size="small" effect="plain">未分配机柜 / U 位</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90">
@@ -78,8 +81,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="ownerName" label="归属业务" min-width="120" />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
             <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
             <el-button link size="small" @click="setStatus(row, 'REPAIR')">维修</el-button>
             <el-button link size="small" @click="setStatus(row, 'SCRAP')">报废</el-button>
@@ -115,7 +119,12 @@
         <el-form-item label="管理 IP"><el-input v-model="form.ipAddress" /></el-form-item>
         <el-form-item label="操作系统"><el-input v-model="form.osVersion" /></el-form-item>
         <el-form-item label="机柜">
-          <el-select v-model="form.cabinetId" style="width: 100%">
+          <el-select
+            v-model="form.cabinetId"
+            style="width: 100%"
+            :disabled="form.status === 'OFFLINE'"
+            :placeholder="form.status === 'OFFLINE' ? '下架状态不分配机柜' : '请选择机柜'"
+          >
             <el-option
               v-for="item in cabinets"
               :key="item.id"
@@ -125,10 +134,18 @@
           </el-select>
         </el-form-item>
         <el-form-item label="起始 U 位">
-          <el-input-number v-model="form.startU" :min="1" :max="48" />
+          <el-input-number
+            v-model="form.startU"
+            :min="1"
+            :max="48"
+            :disabled="form.status === 'OFFLINE'"
+          />
           <span class="muted til">占</span>
           <el-input-number v-model="form.sizeU" :min="1" :max="8" />
           <span class="muted til">U</span>
+          <div v-if="form.status === 'OFFLINE'" class="form-hint">
+            下架服务器当前位置为「未分配」；下架前的原机柜 / U 位由下架工单历史快照永久保留
+          </div>
         </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="form.status" style="width: 100%">
@@ -145,19 +162,53 @@
         <el-button type="primary" @click="submit">保存</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="detailDialog" :title="detail ? `服务器详情 · ${detail.server.assetNo}` : '服务器详情'" width="560px">
+      <template v-if="detail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="资产编号">{{ detail.server.assetNo }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="statusTagType(detail.server.status)" size="small">
+              {{ SERVER_STATUS[detail.server.status] }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="当前机柜">
+            {{ detail.server.cabinetId ? cabinetName(detail.server.cabinetId) : '未分配机柜' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="当前 U 位">
+            {{ detail.server.startU ? `${detail.server.startU}U 起，占 ${detail.server.sizeU}U` : '未分配 U 位' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="品牌 / 型号">{{ detail.server.brand }} {{ detail.server.model }}</el-descriptions-item>
+          <el-descriptions-item label="序列号">{{ detail.server.serialNo || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="管理 IP">{{ detail.server.ipAddress || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="归属业务">{{ detail.server.ownerName || '—' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-alert
+          v-if="detail.offCabinetId"
+          class="off-history"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`下架前位置：${cabinetName(detail.offCabinetId)} · ${detail.offStartU}U 起${detail.offSizeU ? `，占 ${detail.offSizeU}U` : ''}（下架工单 ${detail.lastOffOrderNo}，${fmtTime(detail.offFinishTime)} 完成）`"
+          description="该位置是已完成下架工单固定的历史快照，永久保留；当前位置已释放为未分配，即使以后重新上架，这里仍显示下架前的原机柜、原 U 位。"
+        />
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { SERVER_STATUS, cabinetApi, serverApi, statusTagType } from '../api'
+import { SERVER_STATUS, cabinetApi, fmtTime, serverApi, statusTagType } from '../api'
 
 const rows = ref([])
 const total = ref(0)
 const cabinets = ref([])
 const dialog = ref(false)
 const editing = ref(false)
+const detailDialog = ref(false)
+const detail = ref(null)
 
 const query = reactive({
   assetNo: '',
@@ -238,6 +289,12 @@ function openEdit(row) {
   dialog.value = true
 }
 
+/** 详情：当前位置与下架前历史位置由后端分列返回 */
+async function openDetail(row) {
+  detail.value = await serverApi.detail(row.id)
+  detailDialog.value = true
+}
+
 async function submit() {
   if (editing.value) {
     await serverApi.update(form.value.id, form.value)
@@ -253,6 +310,9 @@ async function submit() {
 async function setStatus(row, status) {
   await serverApi.setStatus(row.id, status)
   ElMessage.success(`${row.assetNo} 状态已更新为「${SERVER_STATUS[status]}」`)
+  if (detailDialog.value && detail.value && detail.value.server.id === row.id) {
+    detail.value = await serverApi.detail(row.id)
+  }
   reload()
 }
 
@@ -269,6 +329,17 @@ onMounted(async () => {
 
 .til {
   margin: 0 6px;
+}
+
+.form-hint {
+  flex-basis: 100%;
+  margin-top: 4px;
+  color: var(--el-color-info);
+  font-size: 12px;
+}
+
+.off-history {
+  margin-top: 14px;
 }
 
 .pager {

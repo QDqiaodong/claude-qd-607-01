@@ -40,6 +40,8 @@ export const cabinetApi = {
 export const serverApi = {
   search: (params) => http.get('/servers', { params }),
   get: (id) => http.get(`/servers/${id}`),
+  /** 详情：当前位置 + 最近一次下架前的历史位置快照（两个位置分列） */
+  detail: (id) => http.get(`/servers/${id}/detail`),
   create: (data) => http.post('/servers', data),
   update: (id, data) => http.put(`/servers/${id}`, data),
   setStatus: (id, status) => http.post(`/servers/${id}/status`, { status }),

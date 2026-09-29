@@ -15,6 +15,10 @@ import lombok.Data;
 /**
  * 模块二：服务器资产。状态 ONLINE 在架 / OFFLINE 下架 / REPAIR 维修 / SCRAP 报废。
  * 在架、维修、报废三种状态才在机架图上占 U 位；下架的不再占位置。
+ *
+ * 位置口径：cabinetId / startU 是【当前位置】。下架（手工或下架工单完成）时当前位置必须清空为
+ * 未分配（null）；下架前的原机柜、原 U 位不属于资产，永久保存在下架工单的 from_* 历史快照列里，
+ * 不随当前位置变化或重新上架而改写。
  */
 @Entity
 @Table(name = "idc_server")

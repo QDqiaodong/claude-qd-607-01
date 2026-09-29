@@ -1,11 +1,17 @@
 package com.idc.center.repository;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import com.idc.center.domain.WorkOrder;
+
+import jakarta.persistence.LockModeType;
 
 /**
  * 工单：列表同样走 Query by Example（按类型/状态精确匹配，单号、申请人模糊匹配）。
@@ -16,6 +22,11 @@ public interface WorkOrderRepository extends JpaRepository<WorkOrder, Long> {
     List<WorkOrder> findByServerIdOrderByIdDesc(Long serverId);
 
     boolean existsByOrderNo(String orderNo);
+
+    /** 推进前的行锁读取（SELECT ... FOR UPDATE），两个人同时推进同一张工单时串行化 */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from WorkOrder o where o.id = :id")
+    Optional<WorkOrder> lockById(@Param("id") Long id);
 
     /** 机柜相关（目标机柜）某状态的上架 / 迁移工单：隔离生效时查施工中的冲突 */
     List<WorkOrder> findByCabinetIdAndOrderTypeInAndStatus(Long cabinetId, List<String> orderTypes, String status);
